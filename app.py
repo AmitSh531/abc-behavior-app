@@ -11,7 +11,7 @@ st.set_page_config(
     page_title="ניתוח תצפיות ABC",
     page_icon="📋",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 st.markdown("""
@@ -189,6 +189,34 @@ def calc_duration(s, e):
 def round_half_up(x):
     return math.floor(x + 0.5)
 
+def build_code_opts(codes_df, categories):
+    opts = [""]
+    for _, r in codes_df[codes_df["category"].isin(categories)].sort_values("code").iterrows():
+        icon = {"appropriate": "🟢 ", "inappropriate": "🔴 "}.get(r["behavior_type"], "")
+        opts.append(f"{icon}{r['code']} — {r['description']}")
+    return opts
+
+def code_to_label(code, codes_df):
+    if not code:
+        return ""
+    r = codes_df[codes_df["code"] == code]
+    if r.empty:
+        return code
+    icon = {"appropriate": "🟢 ", "inappropriate": "🔴 "}.get(r.iloc[0]["behavior_type"], "")
+    return f"{icon}{code} — {r.iloc[0]['description']}"
+
+def extract_code(val):
+    if not val or (isinstance(val, float) and pd.isna(val)):
+        return None
+    s = str(val).strip()
+    if not s:
+        return None
+    for prefix in ["🟢 ", "🔴 "]:
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    return s.split(" — ")[0].strip() if " — " in s else (s or None)
+
 def nav(page, **kw):
     st.session_state.page = page
     for k, v in kw.items():
@@ -200,7 +228,6 @@ _defaults = {
     "page": "home",
     "child_id": None,
     "obs_id": None,
-    "episodes": [{"A": "", "B": "", "C": "", "time": "", "notes": ""}],
     "new_obs_meta": {},
     "analysis_obs_ids": [],
     "analysis_comparison_time": 30,
@@ -209,10 +236,19 @@ _defaults = {
     "obs_sort_mode": False,
     "analysis_mode": False,
     "success_msg": None,
+    "editing_child_id": None,
+    "pending_delete_child_id": None,
+    "edit_obs_loaded_id": None,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+_EMPTY_ROW = {"A": "", "B": "", "C": "", "time": "", "notes": ""}
+if "editor_data" not in st.session_state:
+    st.session_state.editor_data = pd.DataFrame([_EMPTY_ROW.copy()])
+if "edit_obs_data" not in st.session_state:
+    st.session_state.edit_obs_data = pd.DataFrame([_EMPTY_ROW.copy()])
 
 def flash():
     """Show and clear a queued success message."""
@@ -407,7 +443,7 @@ elif st.session_state.page == "children":
                          gb.strip() or None, nt.strip() or None)
                     )
                     st.session_state.success_msg = f"✅ {name} נוסף/ה בהצלחה!"
-                    nav("children"); st.rerun()
+                    nav("home"); st.rerun()
 
     with col_list:
         if children.empty:
@@ -415,9 +451,13 @@ elif st.session_state.page == "children":
         else:
             st.markdown(f"**{len(children)} ילדים/ות במאגר**")
             for _, ch in children.iterrows():
+                cid = int(ch["id"])
                 n_obs = int(query("SELECT COUNT(*) as n FROM observations WHERE child_id=?",
-                                  (ch["id"],)).iloc[0]["n"])
-                c1, c2 = st.columns([4, 1])
+                                  (cid,)).iloc[0]["n"])
+                editing = (st.session_state.editing_child_id == cid)
+                pending_del = (st.session_state.pending_delete_child_id == cid)
+
+                c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
                 with c1:
                     parts = []
                     if ch.get("dob"):
@@ -428,10 +468,60 @@ elif st.session_state.page == "children":
                     st.markdown(f"**👤 {ch['name']}**")
                     st.caption(" | ".join(parts))
                 with c2:
-                    if st.button("📋 פתחי", key=f"open_{ch['id']}",
+                    if st.button("📋 פתחי", key=f"open_{cid}",
                                  type="primary", use_container_width=True):
-                        nav("child_obs", child_id=int(ch["id"]))
+                        nav("child_obs", child_id=cid); st.rerun()
+                with c3:
+                    if st.button("✏️ ערוך", key=f"edit_{cid}", use_container_width=True):
+                        st.session_state.editing_child_id = None if editing else cid
+                        st.session_state.pending_delete_child_id = None
                         st.rerun()
+                with c4:
+                    if not pending_del:
+                        if st.button("🗑️ מחק", key=f"del_{cid}", use_container_width=True):
+                            st.session_state.pending_delete_child_id = cid
+                            st.session_state.editing_child_id = None
+                            st.rerun()
+                    else:
+                        st.warning("בטוח/ה?")
+                        if st.button("כן, מחק", key=f"conf_del_{cid}",
+                                     type="primary", use_container_width=True):
+                            execute("DELETE FROM children WHERE id=?", (cid,))
+                            st.session_state.pending_delete_child_id = None
+                            st.session_state.success_msg = f"✅ {ch['name']} נמחק/ה (כולל כל התצפיות)."
+                            nav("children"); st.rerun()
+
+                if editing:
+                    with st.form(f"edit_ch_{cid}"):
+                        st.markdown("**✏️ עריכת פרטי ילד/ה**")
+                        en = st.text_input("שם מלא *", value=ch["name"])
+                        ed = st.date_input("תאריך לידה",
+                                           value=date.fromisoformat(ch["dob"]) if ch.get("dob") else None)
+                        ef = st.text_input("שם מסגרת", value=ch.get("framework_name") or "")
+                        et = st.text_area("התנהגות יעד", value=ch.get("target_behavior") or "", height=60)
+                        eg = st.text_area("התנהגות מטרה", value=ch.get("goal_behavior") or "", height=60)
+                        eno = st.text_area("הערות", value=ch.get("notes") or "", height=50)
+                        cs, cc = st.columns(2)
+                        saved = cs.form_submit_button("💾 שמור", type="primary")
+                        cancelled = cc.form_submit_button("❌ ביטול")
+                        if saved:
+                            if not en.strip():
+                                st.error("נא להזין שם")
+                            else:
+                                execute(
+                                    "UPDATE children SET name=?,dob=?,framework_name=?,"
+                                    "target_behavior=?,goal_behavior=?,notes=? WHERE id=?",
+                                    (en.strip(), str(ed) if ed else None,
+                                     ef.strip() or None, et.strip() or None,
+                                     eg.strip() or None, eno.strip() or None, cid)
+                                )
+                                st.session_state.editing_child_id = None
+                                st.session_state.success_msg = f"✅ {en.strip()} עודכן/ה בהצלחה!"
+                                nav("children"); st.rerun()
+                        if cancelled:
+                            st.session_state.editing_child_id = None
+                            st.rerun()
+
                 st.markdown("---")
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -606,6 +696,7 @@ elif st.session_state.page == "child_obs":
 # VIEW OBSERVATION
 # ═════════════════════════════════════════════════════════════════════════════
 elif st.session_state.page == "view_obs":
+    flash()
     obs_id = st.session_state.obs_id
     obs_df = query(
         "SELECT o.*, c.name as child_name FROM observations o "
@@ -615,8 +706,13 @@ elif st.session_state.page == "view_obs":
         nav("children"); st.rerun()
     obs = obs_df.iloc[0]
 
-    hc, hb = st.columns([4, 1])
+    hc, hb, he = st.columns([3, 1, 1])
     hc.title(f"📋 תצפית — {obs['child_name']}")
+    with he:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("✏️ ערוך תצפית", use_container_width=True):
+            st.session_state.edit_obs_loaded_id = None
+            nav("edit_obs", obs_id=obs_id); st.rerun()
     with hb:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("← תצפיות"):
@@ -645,20 +741,10 @@ elif st.session_state.page == "view_obs":
     else:
         st.subheader(f"אפיזודות ({len(eps)})")
 
-        def enrich(code):
-            if not code:
-                return "—"
-            r = codes_df[codes_df["code"] == code]
-            if r.empty:
-                return code
-            icon = {"appropriate": "🟢", "inappropriate": "🔴"}.get(
-                r.iloc[0]["behavior_type"], "")
-            return f"{icon} {code} — {r.iloc[0]['description']}"
-
         disp = eps.copy()
-        disp["antecedent_code"] = disp["antecedent_code"].apply(enrich)
-        disp["behavior_code"] = disp["behavior_code"].apply(enrich)
-        disp["consequence_code"] = disp["consequence_code"].apply(enrich)
+        disp["antecedent_code"] = disp["antecedent_code"].fillna("—")
+        disp["behavior_code"] = disp["behavior_code"].fillna("—")
+        disp["consequence_code"] = disp["consequence_code"].fillna("—")
         disp = disp[["episode_order", "episode_time", "antecedent_code",
                       "behavior_code", "consequence_code", "notes"]]
         disp.columns = ["#", "שעה", "נסיבות (A)", "התנהגות (B)", "תוצאה (C)", "הערות"]
@@ -679,6 +765,129 @@ elif st.session_state.page == "view_obs":
     if st.button("🗑️ מחיקת תצפית זו", type="secondary"):
         execute("DELETE FROM observations WHERE id=?", (obs_id,))
         nav("child_obs", child_id=int(obs["child_id"])); st.rerun()
+
+# ═════════════════════════════════════════════════════════════════════════════
+# EDIT OBSERVATION
+# ═════════════════════════════════════════════════════════════════════════════
+elif st.session_state.page == "edit_obs":
+    obs_id = st.session_state.obs_id
+    obs_df = query(
+        "SELECT o.*, c.name as child_name FROM observations o "
+        "JOIN children c ON o.child_id=c.id WHERE o.id=?", (obs_id,)
+    )
+    if obs_df.empty:
+        nav("children"); st.rerun()
+    obs = obs_df.iloc[0]
+    child_id = int(obs["child_id"])
+
+    hc, hb = st.columns([4, 1])
+    hc.title(f"✏️ עריכת תצפית — {obs['child_name']}")
+    with hb:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("← ביטול"):
+            nav("view_obs", obs_id=obs_id); st.rerun()
+
+    codes_df = query("SELECT * FROM codes ORDER BY category, code")
+
+    if st.session_state.edit_obs_loaded_id != obs_id:
+        eps_db = query(
+            "SELECT * FROM episodes WHERE observation_id=? ORDER BY episode_order", (obs_id,)
+        )
+        if eps_db.empty:
+            st.session_state.edit_obs_data = pd.DataFrame([_EMPTY_ROW.copy()])
+        else:
+            rows = []
+            for _, ep in eps_db.iterrows():
+                rows.append({
+                    "A": code_to_label(ep["antecedent_code"], codes_df),
+                    "B": code_to_label(ep["behavior_code"], codes_df),
+                    "C": code_to_label(ep["consequence_code"], codes_df),
+                    "time": ep["episode_time"] or "",
+                    "notes": ep["notes"] or "",
+                })
+            st.session_state.edit_obs_data = pd.DataFrame(rows)
+        st.session_state.edit_obs_loaded_id = obs_id
+
+    st.subheader("פרטי התצפית")
+    with st.form("edit_obs_meta"):
+        c1, c2 = st.columns(2)
+        obs_number = c1.text_input("מספר תצפית", value=obs.get("obs_number") or "")
+        obs_date_v = c2.date_input(
+            "תאריך",
+            value=date.fromisoformat(obs["obs_date"]) if obs.get("obs_date") else date.today()
+        )
+        c3, c4 = st.columns(2)
+        st_time = c3.text_input("שעת התחלה (HH:MM)", value=obs.get("start_time") or "")
+        en_time = c4.text_input("שעת סיום (HH:MM)", value=obs.get("end_time") or "")
+        c5, c6 = st.columns(2)
+        location = c5.text_input("מיקום", value=obs.get("location") or "")
+        subject = c6.text_input("שיעור", value=obs.get("subject") or "")
+        c7, c8 = st.columns(2)
+        teacher = c7.text_input("שם המורה", value=obs.get("teacher_name") or "")
+        asst_idx = 1 if obs.get("has_assistant") else 0
+        has_asst = c8.selectbox("יש סייעת?", ["לא", "כן"], index=asst_idx)
+        obs_notes = st.text_area("הערות לתצפית", value=obs.get("obs_notes") or "", height=60)
+        if st.form_submit_button("שמור פרטים ועבור לאפיזודות ←", type="primary"):
+            dur = calc_duration(st_time, en_time) if st_time and en_time else None
+            execute(
+                "UPDATE observations SET obs_number=?,obs_date=?,start_time=?,end_time=?,"
+                "duration_min=?,location=?,subject=?,teacher_name=?,has_assistant=?,obs_notes=? "
+                "WHERE id=?",
+                (obs_number.strip() or None, str(obs_date_v),
+                 st_time.strip() or None, en_time.strip() or None, dur,
+                 location.strip() or None, subject.strip() or None,
+                 teacher.strip() or None, 1 if has_asst == "כן" else 0,
+                 obs_notes.strip() or None, obs_id)
+            )
+            st.rerun()
+
+    st.markdown("---")
+    st.subheader("אפיזודות")
+    st.caption("לחצי Tab לעבור בין תאים. לחצי ➕ בתחתית הטבלה להוספת שורה.")
+
+    a_opts = build_code_opts(codes_df, ["A", "C/A"])
+    b_opts = build_code_opts(codes_df, ["B"])
+    c_opts = build_code_opts(codes_df, ["C/A"])
+
+    edited = st.data_editor(
+        st.session_state.edit_obs_data,
+        column_config={
+            "A": st.column_config.SelectboxColumn("A — נסיבות", options=a_opts, required=False),
+            "B": st.column_config.SelectboxColumn("B — התנהגות", options=b_opts, required=False),
+            "C": st.column_config.SelectboxColumn("C — תוצאה", options=c_opts, required=False),
+            "time": st.column_config.TextColumn("שעה", width="small"),
+            "notes": st.column_config.TextColumn("הערות"),
+        },
+        num_rows="dynamic",
+        use_container_width=True,
+        key="ep_editor_edit",
+        hide_index=False,
+    )
+    st.session_state.edit_obs_data = edited
+
+    st.markdown("---")
+    if st.button("💾 שמירת שינויים", type="primary", use_container_width=True):
+        rows = edited.to_dict("records")
+        valid = [r for r in rows
+                 if extract_code(r.get("A")) or extract_code(r.get("B")) or extract_code(r.get("C"))]
+        if not valid:
+            st.error("נא להזין לפחות שורה אחת עם קוד")
+        else:
+            execute("DELETE FROM episodes WHERE observation_id=?", (obs_id,))
+            executemany(
+                "INSERT INTO episodes "
+                "(observation_id,episode_order,antecedent_code,behavior_code,"
+                "consequence_code,episode_time,notes) VALUES (?,?,?,?,?,?,?)",
+                [(obs_id, idx + 1,
+                  extract_code(r.get("A")), extract_code(r.get("B")),
+                  extract_code(r.get("C")),
+                  str(r.get("time") or "").strip() or None,
+                  str(r.get("notes") or "").strip() or None)
+                 for idx, r in enumerate(valid)]
+            )
+            st.session_state.success_msg = "✅ התצפית עודכנה בהצלחה!"
+            st.session_state.edit_obs_loaded_id = None
+            nav("view_obs", obs_id=obs_id); st.rerun()
 
 # ═════════════════════════════════════════════════════════════════════════════
 # NEW OBSERVATION — METADATA
@@ -754,78 +963,34 @@ elif st.session_state.page == "new_obs_eps":
 
     codes_df = query("SELECT * FROM codes ORDER BY category, code")
 
-    a_codes = [""] + list(codes_df[codes_df["category"].isin(["A", "C/A"])]["code"])
-    b_codes = [""] + list(codes_df[codes_df["category"] == "B"]["code"])
-    c_codes = [""] + list(codes_df[codes_df["category"].isin(["C/A"])]["code"])
-
-    def make_labels(code_list):
-        out = {"": "—"}
-        for code in code_list:
-            if not code:
-                continue
-            r = codes_df[codes_df["code"] == code]
-            if r.empty:
-                out[code] = code
-                continue
-            icon = {"appropriate": "🟢", "inappropriate": "🔴"}.get(
-                r.iloc[0]["behavior_type"], "")
-            out[code] = f"{icon} {code} — {r.iloc[0]['description']}"
-        return out
-
-    alm = make_labels(a_codes)
-    blm = make_labels(b_codes)
-    clm = make_labels(c_codes)
-    ad = list(alm.values()); ar = {v: k for k, v in alm.items()}
-    bd = list(blm.values()); br = {v: k for k, v in blm.items()}
-    cd = list(clm.values()); cr = {v: k for k, v in clm.items()}
+    a_opts = build_code_opts(codes_df, ["A", "C/A"])
+    b_opts = build_code_opts(codes_df, ["B"])
+    c_opts = build_code_opts(codes_df, ["C/A"])
 
     st.subheader("שלב 2 מתוך 2 — טבלת אפיזודות ABC")
-    st.caption("הקלידי אות בתיבה הנגללת כדי לסנן קודים במהירות.")
+    st.caption("לחצי Tab לעבור בין תאים. בסוף שורה — לחצי על ➕ בתחתית הטבלה להוספת שורה.")
 
-    h0, h1, h2, h3, h4, h5, h6 = st.columns([0.4, 2.1, 2.3, 2.1, 1, 2, 0.5])
-    h0.markdown("**#**")
-    h1.markdown("**A — נסיבות**")
-    h2.markdown("**B — התנהגות**")
-    h3.markdown("**C — תוצאה**")
-    h4.markdown("**שעה**")
-    h5.markdown("**הערות**")
-
-    eps = st.session_state.episodes
-
-    for i, ep in enumerate(eps):
-        c0, c1, c2, c3, c4, c5, c6 = st.columns([0.4, 2.1, 2.3, 2.1, 1, 2, 0.5])
-        c0.markdown(f"**{i + 1}**")
-
-        cur_a = alm.get(ep.get("A", ""), "—")
-        cur_b = blm.get(ep.get("B", ""), "—")
-        cur_c = clm.get(ep.get("C", ""), "—")
-
-        sa = c1.selectbox("A", ad, index=ad.index(cur_a) if cur_a in ad else 0,
-                          key=f"a_{i}", label_visibility="collapsed")
-        sb = c2.selectbox("B", bd, index=bd.index(cur_b) if cur_b in bd else 0,
-                          key=f"b_{i}", label_visibility="collapsed")
-        sc = c3.selectbox("C", cd, index=cd.index(cur_c) if cur_c in cd else 0,
-                          key=f"c_{i}", label_visibility="collapsed")
-
-        ep["A"] = ar.get(sa, "")
-        ep["B"] = br.get(sb, "")
-        ep["C"] = cr.get(sc, "")
-        ep["time"] = c4.text_input("שעה", value=ep.get("time", ""),
-                                   key=f"t_{i}", label_visibility="collapsed",
-                                   placeholder="09:05")
-        ep["notes"] = c5.text_input("הערות", value=ep.get("notes", ""),
-                                    key=f"n_{i}", label_visibility="collapsed")
-        if c6.button("✕", key=f"del_{i}"):
-            eps.pop(i); st.rerun()
+    edited = st.data_editor(
+        st.session_state.editor_data,
+        column_config={
+            "A": st.column_config.SelectboxColumn("A — נסיבות", options=a_opts, required=False),
+            "B": st.column_config.SelectboxColumn("B — התנהגות", options=b_opts, required=False),
+            "C": st.column_config.SelectboxColumn("C — תוצאה", options=c_opts, required=False),
+            "time": st.column_config.TextColumn("שעה", width="small"),
+            "notes": st.column_config.TextColumn("הערות"),
+        },
+        num_rows="dynamic",
+        use_container_width=True,
+        key="ep_editor_new",
+        hide_index=False,
+    )
+    st.session_state.editor_data = edited
 
     st.markdown("---")
-    ca, cb = st.columns(2)
-    if ca.button("➕ הוספת שורה", use_container_width=True):
-        eps.append({"A": "", "B": "", "C": "", "time": "", "notes": ""})
-        st.rerun()
-
-    if cb.button("💾 שמירת תצפית", type="primary", use_container_width=True):
-        valid = [e for e in eps if e.get("A") or e.get("B") or e.get("C")]
+    if st.button("💾 שמירת תצפית", type="primary", use_container_width=True):
+        rows = edited.to_dict("records")
+        valid = [r for r in rows
+                 if extract_code(r.get("A")) or extract_code(r.get("B")) or extract_code(r.get("C"))]
         if not valid:
             st.error("נא להזין לפחות שורה אחת עם קוד")
         else:
@@ -843,12 +1008,15 @@ elif st.session_state.page == "new_obs_eps":
                 "INSERT INTO episodes "
                 "(observation_id,episode_order,antecedent_code,behavior_code,"
                 "consequence_code,episode_time,notes) VALUES (?,?,?,?,?,?,?)",
-                [(oid, idx + 1, e.get("A") or None, e.get("B") or None,
-                  e.get("C") or None, e.get("time") or None, e.get("notes") or None)
-                 for idx, e in enumerate(valid)]
+                [(oid, idx + 1,
+                  extract_code(r.get("A")), extract_code(r.get("B")),
+                  extract_code(r.get("C")),
+                  str(r.get("time") or "").strip() or None,
+                  str(r.get("notes") or "").strip() or None)
+                 for idx, r in enumerate(valid)]
             )
             st.session_state.success_msg = "✅ התצפית נשמרה בהצלחה!"
-            st.session_state.episodes = [{"A": "", "B": "", "C": "", "time": "", "notes": ""}]
+            st.session_state.editor_data = pd.DataFrame([_EMPTY_ROW.copy()])
             nav("child_obs", child_id=child_id); st.rerun()
 
 # ═════════════════════════════════════════════════════════════════════════════
