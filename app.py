@@ -244,7 +244,7 @@ for k, v in _defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-_EMPTY_ROW = {"A": "", "B": "", "C": "", "time": "", "notes": ""}
+_EMPTY_ROW = {"notes": "", "time": "", "C": "", "B": "", "A": ""}
 if "editor_data" not in st.session_state:
     st.session_state.editor_data = pd.DataFrame([_EMPTY_ROW.copy()])
 if "edit_obs_data" not in st.session_state:
@@ -799,11 +799,11 @@ elif st.session_state.page == "edit_obs":
             rows = []
             for _, ep in eps_db.iterrows():
                 rows.append({
-                    "A": code_to_label(ep["antecedent_code"], codes_df),
-                    "B": code_to_label(ep["behavior_code"], codes_df),
-                    "C": code_to_label(ep["consequence_code"], codes_df),
-                    "time": ep["episode_time"] or "",
                     "notes": ep["notes"] or "",
+                    "time": ep["episode_time"] or "",
+                    "C": code_to_label(ep["consequence_code"], codes_df),
+                    "B": code_to_label(ep["behavior_code"], codes_df),
+                    "A": code_to_label(ep["antecedent_code"], codes_df),
                 })
             st.session_state.edit_obs_data = pd.DataFrame(rows)
         st.session_state.edit_obs_loaded_id = obs_id
@@ -968,7 +968,7 @@ elif st.session_state.page == "new_obs_eps":
     c_opts = build_code_opts(codes_df, ["C/A"])
 
     st.subheader("שלב 2 מתוך 2 — טבלת אפיזודות ABC")
-    st.caption("לחצי Tab לעבור בין תאים. בסוף שורה — לחצי על ➕ בתחתית הטבלה להוספת שורה.")
+    st.caption("💡 לחצי/געי בכל תא לבחירה (לא Enter). לתא הבא: Tab. לשורה חדשה: לחצי ➕ בתחתית הטבלה. עמודות מימין לשמאל: A | B | C | שעה | הערות")
 
     edited = st.data_editor(
         st.session_state.editor_data,
