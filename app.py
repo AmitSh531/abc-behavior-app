@@ -863,7 +863,6 @@ elif st.session_state.page == "edit_obs":
         key="ep_editor_edit",
         hide_index=False,
     )
-    st.session_state.edit_obs_data = edited
 
     st.markdown("---")
     if st.button("💾 שמירת שינויים", type="primary", use_container_width=True):
@@ -887,6 +886,7 @@ elif st.session_state.page == "edit_obs":
             )
             st.session_state.success_msg = "✅ התצפית עודכנה בהצלחה!"
             st.session_state.edit_obs_loaded_id = None
+            st.session_state.pop("ep_editor_edit", None)
             nav("view_obs", obs_id=obs_id); st.rerun()
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -984,7 +984,6 @@ elif st.session_state.page == "new_obs_eps":
         key="ep_editor_new",
         hide_index=False,
     )
-    st.session_state.editor_data = edited
 
     st.markdown("---")
     if st.button("💾 שמירת תצפית", type="primary", use_container_width=True):
@@ -1017,6 +1016,7 @@ elif st.session_state.page == "new_obs_eps":
             )
             st.session_state.success_msg = "✅ התצפית נשמרה בהצלחה!"
             st.session_state.editor_data = pd.DataFrame([_EMPTY_ROW.copy()])
+            st.session_state.pop("ep_editor_new", None)
             nav("child_obs", child_id=child_id); st.rerun()
 
 # ═════════════════════════════════════════════════════════════════════════════
