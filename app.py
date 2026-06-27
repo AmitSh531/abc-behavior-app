@@ -339,11 +339,11 @@ elif st.session_state.page == "codes":
             for _, r in sub.iterrows():
                 row = {"קוד": r["code"], "פירוש": r["description"], "עמודה": cat}
                 if cat == "B":
-                    row["נאות/לא נאות"] = (
-                        "🟢 נאות" if r["behavior_type"] == "appropriate" else "🔴 לא נאות"
+                    row["נאותות/לא נאותות"] = (
+                        "🟢 נאותות" if r["behavior_type"] == "appropriate" else "🔴 לא נאותות"
                     )
                 else:
-                    row["נאות/לא נאות"] = "—"
+                    row["נאותות/לא נאותות"] = "—"
                 rows.append(row)
             st.dataframe(rtl_df(pd.DataFrame(rows)), use_container_width=True, hide_index=True)
 
@@ -362,7 +362,7 @@ elif st.session_state.page == "codes":
                         if nc == "B":
                             bi = 0 if row["behavior_type"] == "inappropriate" else 1
                             nb = "inappropriate" if st.selectbox(
-                                "סוג", ["🔴 לא נאות", "🟢 נאות"], index=bi
+                                "סוג", ["🔴 לא נאותות", "🟢 נאותות"], index=bi
                             ).startswith("🔴") else "appropriate"
                         if st.form_submit_button("💾 שמור"):
                             execute("UPDATE codes SET description=?,category=?,behavior_type=? WHERE code=?",
@@ -392,7 +392,7 @@ elif st.session_state.page == "codes":
             btype_v = None
             if cat_v == "B":
                 btype_v = "inappropriate" if st.selectbox(
-                    "סוג התנהגות", ["🔴 לא נאות", "🟢 נאות"]
+                    "סוג התנהגות", ["🔴 לא נאותות", "🟢 נאותות"]
                 ).startswith("🔴") else "appropriate"
             if st.form_submit_button("➕ הוספה", type="primary"):
                 cv = cv.strip()
@@ -758,8 +758,8 @@ elif st.session_state.page == "view_obs":
         app_c = int((bm["behavior_type"] == "appropriate").sum())
         st.markdown("---")
         mc1, mc2 = st.columns(2)
-        mc1.metric("🔴 התנהגויות לא נאות", inapp)
-        mc2.metric("🟢 התנהגויות נאות", app_c)
+        mc1.metric("🔴 התנהגויות לא נאותות", inapp)
+        mc2.metric("🟢 התנהגויות נאותות", app_c)
 
     st.markdown("---")
     if st.button("🗑️ מחיקת תצפית זו", type="secondary"):
@@ -1090,9 +1090,9 @@ elif st.session_state.page == "analysis_result":
 
     codes_df = query("SELECT * FROM codes")
 
-    inapp_totals: dict = {}
-    app_totals: dict = {}
-    obs_dates = []
+    inapp_data = {"A": {}, "B": {}, "C": {}}
+    app_data   = {"A": {}, "B": {}, "C": {}}
+    obs_dates  = []
 
     for oid in sel_ids:
         o = query("SELECT * FROM observations WHERE id=?", (oid,))
@@ -1113,79 +1113,108 @@ elif st.session_state.page == "analysis_result":
             if ci.empty:
                 continue
             bt = ci.iloc[0]["behavior_type"]
-            if bt == "inappropriate":
-                inapp_totals[bc] = inapp_totals.get(bc, 0) + factor
-            elif bt == "appropriate":
-                app_totals[bc] = app_totals.get(bc, 0) + factor
+            if bt not in ("inappropriate", "appropriate"):
+                continue
+            data = inapp_data if bt == "inappropriate" else app_data
+            data["B"][bc] = data["B"].get(bc, 0) + factor
+            ac = ep.get("antecedent_code")
+            if ac:
+                data["A"][ac] = data["A"].get(ac, 0) + factor
+            cc = ep.get("consequence_code")
+            if cc:
+                data["C"][cc] = data["C"].get(cc, 0) + factor
 
-    inapp_final = {c: round_half_up(v) for c, v in inapp_totals.items() if v > 0}
-    app_final = {c: round_half_up(v) for c, v in app_totals.items() if v > 0}
+    for data in [inapp_data, app_data]:
+        for col in "ABC":
+            data[col] = {c: round_half_up(v) for c, v in data[col].items() if v > 0}
 
     obs_dates_s = sorted(obs_dates)
     date_range = (f"{obs_dates_s[0]} — {obs_dates_s[-1]}"
                   if len(obs_dates_s) > 1 else (obs_dates_s[0] if obs_dates_s else ""))
 
-    # Header
     st.markdown(f"""
 **ילד/ה:** {child['name']}  |  **זמן השוואה:** {cmp_time} דקות  |
 **מספר תצפיות:** {len(sel_ids)}  |  **טווח תאריכים:** {date_range}
 """)
     st.markdown("---")
 
-    def build_df(totals):
+    def build_abc_table(data):
+        a_items = sorted(data["A"].items(), key=lambda x: -x[1])
+        b_items = sorted(data["B"].items(), key=lambda x: -x[1])
+        c_items = sorted(data["C"].items(), key=lambda x: -x[1])
+        n = max(len(a_items), len(b_items), len(c_items), 1)
         rows = []
-        for code, cnt in sorted(totals.items(), key=lambda x: -x[1]):
-            ci = codes_df[codes_df["code"] == code]
-            desc = ci.iloc[0]["description"] if not ci.empty else ""
-            rows.append({"קוד": code, "תיאור": desc, "מספר הופעות": cnt})
-        return pd.DataFrame(rows) if rows else pd.DataFrame(
-            columns=["קוד", "תיאור", "מספר הופעות"])
+        for i in range(n):
+            rows.append({
+                "A — נסיבות":  f"{a_items[i][0]}-{a_items[i][1]}" if i < len(a_items) else "",
+                "B — התנהגות": f"{b_items[i][0]}-{b_items[i][1]}" if i < len(b_items) else "",
+                "C — תוצאה":   f"{c_items[i][0]}-{c_items[i][1]}" if i < len(c_items) else "",
+            })
+        return pd.DataFrame(rows)
 
-    df_inapp = build_df(inapp_final)
-    df_app = build_df(app_final)
+    def build_abc_chart(data, title):
+        a_items = sorted(data["A"].items(), key=lambda x: -x[1])
+        b_items = sorted(data["B"].items(), key=lambda x: -x[1])
+        c_items = sorted(data["C"].items(), key=lambda x: -x[1])
+        a_x = [f"A: {c}" for c, _ in a_items]
+        b_x = [f"B: {c}" for c, _ in b_items]
+        c_x = [f"C: {c}" for c, _ in c_items]
+        fig = go.Figure()
+        if a_items:
+            fig.add_trace(go.Bar(
+                name="A — נסיבות", x=a_x,
+                y=[v for _, v in a_items], marker_color="#5B9BD5",
+                text=[v for _, v in a_items], textposition="auto",
+                hovertemplate="<b>%{x}</b><br>הופעות: %{y}<extra></extra>"))
+        if b_items:
+            fig.add_trace(go.Bar(
+                name="B — התנהגות", x=b_x,
+                y=[v for _, v in b_items], marker_color="#ED7D31",
+                text=[v for _, v in b_items], textposition="auto",
+                hovertemplate="<b>%{x}</b><br>הופעות: %{y}<extra></extra>"))
+        if c_items:
+            fig.add_trace(go.Bar(
+                name="C — תוצאה", x=c_x,
+                y=[v for _, v in c_items], marker_color="#9467BD",
+                text=[v for _, v in c_items], textposition="auto",
+                hovertemplate="<b>%{x}</b><br>הופעות: %{y}<extra></extra>"))
+        fig.update_layout(
+            title=title, xaxis_title="קוד (A / B / C)", yaxis_title="מספר הופעות",
+            plot_bgcolor="white", showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            xaxis=dict(categoryorder="array",
+                       categoryarray=a_x + b_x + c_x),
+        )
+        return fig
+
+    has_inapp = any(inapp_data[c] for c in "ABC")
+    has_app   = any(app_data[c]   for c in "ABC")
+    df_inapp  = build_abc_table(inapp_data)
+    df_app    = build_abc_table(app_data)
 
     tc1, tc2 = st.columns(2)
     with tc1:
-        st.subheader("🔴 התנהגויות לא נאות")
-        if df_inapp.empty:
+        st.subheader("🔴 התנהגויות לא נאותות")
+        if not has_inapp:
             st.info("לא נמצאו")
         else:
             st.dataframe(rtl_df(df_inapp), use_container_width=True, hide_index=True)
-
     with tc2:
-        st.subheader("🟢 התנהגויות נאות")
-        if df_app.empty:
+        st.subheader("🟢 התנהגויות נאותות")
+        if not has_app:
             st.info("לא נמצאו")
         else:
             st.dataframe(rtl_df(df_app), use_container_width=True, hide_index=True)
 
     st.markdown("---")
-
-    if not df_inapp.empty:
-        st.subheader("📊 גרף התנהגויות לא נאות")
-        fig1 = go.Figure(go.Bar(
-            x=df_inapp["קוד"], y=df_inapp["מספר הופעות"],
-            marker_color="#D85A30",
-            text=df_inapp["מספר הופעות"], textposition="auto",
-            customdata=df_inapp["תיאור"],
-            hovertemplate="<b>%{x}</b> — %{customdata}<br>הופעות: %{y}<extra></extra>"
-        ))
-        fig1.update_layout(xaxis_title="קוד", yaxis_title="מספר הופעות",
-                           plot_bgcolor="white", showlegend=False)
-        st.plotly_chart(fig1, use_container_width=True)
-
-    if not df_app.empty:
-        st.subheader("📊 גרף התנהגויות נאות")
-        fig2 = go.Figure(go.Bar(
-            x=df_app["קוד"], y=df_app["מספר הופעות"],
-            marker_color="#1D9E75",
-            text=df_app["מספר הופעות"], textposition="auto",
-            customdata=df_app["תיאור"],
-            hovertemplate="<b>%{x}</b> — %{customdata}<br>הופעות: %{y}<extra></extra>"
-        ))
-        fig2.update_layout(xaxis_title="קוד", yaxis_title="מספר הופעות",
-                           plot_bgcolor="white", showlegend=False)
-        st.plotly_chart(fig2, use_container_width=True)
+    if has_inapp:
+        st.subheader("📊 גרף התנהגויות לא נאותות")
+        st.plotly_chart(build_abc_chart(inapp_data, "לא נאותות — נסיבות (A) | התנהגות (B) | תוצאה (C)"),
+                        use_container_width=True)
+    if has_app:
+        st.subheader("📊 גרף התנהגויות נאותות")
+        st.plotly_chart(build_abc_chart(app_data, "נאותות — נסיבות (A) | התנהגות (B) | תוצאה (C)"),
+                        use_container_width=True)
 
     st.markdown("---")
     sc1, sc2 = st.columns(2)
@@ -1201,36 +1230,43 @@ elif st.session_state.page == "analysis_result":
                 " VALUES (?,?,?,?,?,?)",
                 (child_id, datetime.now().isoformat()[:10], an_title,
                  cmp_time, json.dumps(sel_ids),
-                 json.dumps({"inapp": inapp_final, "app": app_final}, ensure_ascii=False))
+                 json.dumps({"inapp": inapp_data, "app": app_data}, ensure_ascii=False))
             )
             st.session_state.success_msg = f"✅ הניתוח '{an_title}' נשמר בהצלחה!"
             nav("child_obs", child_id=child_id); st.rerun()
 
     with sc2:
         st.subheader("📤 ייצוא HTML")
-        ri = "".join(
-            f"<tr><td>{r['קוד']}</td><td>{r['תיאור']}</td><td>{r['מספר הופעות']}</td></tr>"
-            for _, r in df_inapp.iterrows()
-        ) if not df_inapp.empty else "<tr><td colspan='3'>—</td></tr>"
-        ra = "".join(
-            f"<tr><td>{r['קוד']}</td><td>{r['תיאור']}</td><td>{r['מספר הופעות']}</td></tr>"
-            for _, r in df_app.iterrows()
-        ) if not df_app.empty else "<tr><td colspan='3'>—</td></tr>"
+
+        def html_abc_rows(data):
+            a_items = sorted(data["A"].items(), key=lambda x: -x[1])
+            b_items = sorted(data["B"].items(), key=lambda x: -x[1])
+            c_items = sorted(data["C"].items(), key=lambda x: -x[1])
+            n = max(len(a_items), len(b_items), len(c_items), 1)
+            rows = ""
+            for i in range(n):
+                a_c = f"{a_items[i][0]}-{a_items[i][1]}" if i < len(a_items) else ""
+                b_c = f"{b_items[i][0]}-{b_items[i][1]}" if i < len(b_items) else ""
+                c_c = f"{c_items[i][0]}-{c_items[i][1]}" if i < len(c_items) else ""
+                rows += f"<tr><td>{a_c}</td><td>{b_c}</td><td>{c_c}</td></tr>"
+            return rows or "<tr><td colspan='3'>—</td></tr>"
 
         html = f"""<!DOCTYPE html><html dir="rtl" lang="he"><head>
 <meta charset="UTF-8"><title>ניתוח — {child['name']}</title>
 <style>body{{font-family:Arial,sans-serif;direction:rtl;padding:24px}}
-h1{{color:#1565C0}}table{{border-collapse:collapse;width:65%;margin:12px 0 24px}}
+h1{{color:#1565C0}}table{{border-collapse:collapse;width:80%;margin:12px 0 24px}}
 th{{background:#eef2ff;padding:8px 14px;border:1px solid #ccc}}
 td{{padding:8px 14px;border:1px solid #ccc}}</style></head><body>
 <h1>📋 ניתוח תצפיות ABC</h1>
 <p><b>ילד/ה:</b> {child['name']}</p>
 <p><b>זמן השוואה:</b> {cmp_time} דקות | <b>תצפיות:</b> {len(sel_ids)} | <b>תאריכים:</b> {date_range}</p>
 <hr>
-<h2 style="color:#D85A30">🔴 התנהגויות לא נאות</h2>
-<table><tr><th>קוד</th><th>תיאור</th><th>הופעות</th></tr>{ri}</table>
-<h2 style="color:#1D9E75">🟢 התנהגויות נאות</h2>
-<table><tr><th>קוד</th><th>תיאור</th><th>הופעות</th></tr>{ra}</table>
+<h2 style="color:#D85A30">🔴 התנהגויות לא נאותות</h2>
+<table><tr><th>A — נסיבות</th><th>B — התנהגות</th><th>C — תוצאה</th></tr>
+{html_abc_rows(inapp_data)}</table>
+<h2 style="color:#1D9E75">🟢 התנהגויות נאותות</h2>
+<table><tr><th>A — נסיבות</th><th>B — התנהגות</th><th>C — תוצאה</th></tr>
+{html_abc_rows(app_data)}</table>
 </body></html>"""
 
         st.download_button(
